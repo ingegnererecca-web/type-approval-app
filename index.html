@@ -39,7 +39,7 @@
   <label for="token">Token GitHub (resta salvato solo in questo browser)</label>
   <input type="password" id="token" placeholder="github_pat_... oppure ghp_...">
   <small>Repository: <b>ingegnererecca-web/type-approval</b>. Il token serve per caricare la foto e avviare la ricerca.</small>
-  <label for="email">La tua email (ci arrivano il verbale e i PDF originali in allegato)</label>
+  <label for="email">Email (facoltativa, funziona solo se l'invio è stato configurato)</label>
   <input type="text" id="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it">
 </section>
 
@@ -71,7 +71,7 @@
 </section>
 
 <section>
-  <h2>4. Risultati non inviati per email</h2>
+  <h2>4. Risultati da scaricare</h2>
   <div id="risultati"><small>Premi "Aggiorna risultati".</small></div>
 </section>
 
@@ -137,7 +137,7 @@ $("avvia").addEventListener("click", async () => {
       riferimento: $("riferimento").value.trim(), organismo: $("organismo").value.trim(),
       categoria: $("categoria").value.trim() };
     const email = $("email").value.trim();
-    if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) throw new Error("Inserisci la tua email nella sezione 1.");
+    if (email && !/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) throw new Error("L'email inserita non è valida.");
     let percorso = "";
     if (f) {
       stato("Caricamento della foto…");
@@ -169,7 +169,7 @@ async function controllaEsecuzione() {
       stato(`Ricerca in corso (avviata ${quando}) – stato: ${run.status}…`);
       timer = setTimeout(controllaEsecuzione, 10000);
     } else {
-      stato(`Ultima ricerca (${quando}): ${run.conclusion === "success" ? "completata – controlla la tua email" : "terminata con errore – " + run.html_url}`,
+      stato(`Ultima ricerca (${quando}): ${run.conclusion === "success" ? "completata – scarica i PDF nella sezione 4" : "terminata con errore – " + run.html_url}`,
             run.conclusion === "success" ? "ok" : "err");
       caricaRisultati();
     }
@@ -199,27 +199,47 @@ function md(t) {  // markdown minimo: titoli, tabelle, elenchi, grassetto, codic
   return out;
 }
 
+async function scaricaBlob(sha, nome) {
+  const r = await gh(`/git/blobs/${sha}`, { headers: { Accept: "application/vnd.github.raw" } });
+  const tipo = nome.toLowerCase().endsWith(".pdf") ? "application/pdf" : "text/plain";
+  const url = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: tipo }));
+  const a = document.createElement("a"); a.href = url; a.download = nome;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 async function caricaRisultati() {
-  // i risultati non stanno nel repository: sono file temporanei ("Artifacts") delle esecuzioni
+  // risultati sui rami privati temporanei consegna/<id> (cancellati dopo il download o entro 24 ore)
   const box = $("risultati");
   try {
-    const r = await (await gh(`/actions/artifacts?per_page=20`)).json();
-    const lista = (r.artifacts || []).filter(a => !a.expired && a.name.startsWith("verbale-"));
-    if (!lista.length) { box.innerHTML = "<small>Nessuno: i risultati sono stati inviati per email.</small>"; return; }
+    const rami = await (await gh(`/git/matching-refs/heads/consegna/`)).json();
+    if (!rami.length) { box.innerHTML = "<small>Nessun risultato da scaricare.</small>"; return; }
     box.innerHTML = "";
-    for (const a of lista) {
-      const run = a.workflow_run ? a.workflow_run.id : a.name.replace("verbale-", "");
-      const quando = new Date(a.created_at).toLocaleString("it-IT");
-      const scade = new Date(a.expires_at).toLocaleString("it-IT");
+    for (const ramo of rami.reverse()) {
+      const nomeRamo = ramo.ref.replace("refs/heads/", "");
+      const commit = await (await gh(`/git/commits/${ramo.object.sha}`)).json();
+      const albero = await (await gh(`/git/trees/${commit.tree.sha}?recursive=1`)).json();
+      const file = albero.tree.filter(x => x.type === "blob")
+        .sort((x, y) => (y.path.endsWith("verbale.pdf") - x.path.endsWith("verbale.pdf")) || x.path.localeCompare(y.path));
+      const quando = new Date(commit.committer.date).toLocaleString("it-IT");
       const d = document.createElement("div"); d.className = "risultato";
-      d.innerHTML = `<b>Ricerca del ${quando}</b> <small>(scade il ${scade})</small><br>
-        <a href="https://github.com/${OWNER}/${REPO}/actions/runs/${run}" target="_blank" rel="noopener">
-        Apri la pagina dell'esecuzione e scarica "${a.name}" (verbale PDF + certificati)</a><br>
-        <button class="sec">Ho scaricato: cancella ora</button>`;
-      d.querySelector("button").onclick = async () => {
-        if (!confirm("Cancellare definitivamente questo risultato da GitHub?")) return;
-        try { await gh(`/actions/artifacts/${a.id}`, { method: "DELETE" }); d.remove(); }
-        catch (e) { alert(e.message); }
+      d.innerHTML = `<b>Ricerca del ${quando}</b><br>` + file.map((f, i) => {
+        const nome = f.path.split("/").pop();
+        const etichetta = nome === "verbale.pdf" ? "Verbale di ricerca (PDF)" :
+          nome === "richiesta.pdf" ? "Richiesta motivata (PDF)" :
+          nome === "SHA256SUMS" ? "Impronte SHA-256" : `Certificato originale: ${nome}`;
+        return `<button class="sec" data-i="${i}" style="display:block;width:100%;text-align:left">⬇ ${etichetta}</button>`;
+      }).join("") + `<button data-canc="1" style="background:#b42318">Ho scaricato: cancella ora</button>`;
+      d.querySelectorAll("button[data-i]").forEach(b => b.onclick = async () => {
+        const f = file[+b.dataset.i];
+        try { b.disabled = true; await scaricaBlob(f.sha, f.path.split("/").pop()); }
+        catch (e) { alert(e.message); } finally { b.disabled = false; }
+      });
+      const canc = d.querySelector("button[data-canc]");
+      canc.onclick = async () => {
+        if (canc.dataset.conferma !== "1") { canc.dataset.conferma = "1"; canc.textContent = "Tocca di nuovo per confermare la cancellazione"; return; }
+        try { await gh(`/git/refs/heads/${nomeRamo}`, { method: "DELETE" }); d.remove(); }
+        catch (e) { canc.textContent = e.message; }
       };
       box.appendChild(d);
     }
