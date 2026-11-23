@@ -86,13 +86,19 @@ $("token").addEventListener("change", () => { try { localStorage.setItem("ta_tok
 function stato(msg, cls) { $("stato").innerHTML = `<span class="${cls||''}">${msg}</span>`; }
 
 async function gh(path, opt = {}) {
-  const tok = $("token").value.trim();
+  // toglie spazi, a capo e caratteri invisibili aggiunti dal copia-incolla del telefono
+  const tok = $("token").value.replace(/[^A-Za-z0-9_]/g, "");
+  if ($("token").value !== tok) { $("token").value = tok; try { localStorage.setItem("ta_token", tok); } catch (e) {} }
   if (!tok) throw new Error("Inserisci il token GitHub.");
-  const r = await fetch(path.startsWith("http") ? path : API + path, {
+  let r;
+  try { r = await fetch(path.startsWith("http") ? path : API + path, {
     ...opt,
     headers: { "Authorization": `Bearer ${tok}`, "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28", ...(opt.headers || {}) }
-  });
+  }); } catch (e) {
+    throw new Error("Collegamento a GitHub non riuscito (" + e.message + "). Controlla la connessione, " +
+      "disattiva eventuali blocchi pubblicità/VPN e riprova; se persiste, reincolla il token.");
+  }
   if (!r.ok) {
     const spiega = {
       401: "Token non valido o scaduto: inseriscine uno nuovo.",
