@@ -52,7 +52,8 @@
       <input type="file" id="fotoCamera" accept="image/*" capture="environment"></div>
   </div>
   <img id="anteprima" alt="anteprima">
-  <label>Correzioni facoltative (lascia vuoto per usare solo la lettura automatica)</label>
+  <div id="lettura" style="font-size:.9rem;margin-top:8px"></div>
+  <label>Dati della targa (compilati in automatico dalla foto: controllali e correggi se serve)</label>
   <div class="griglia">
     <div><label for="marca">Fabbricante / marca</label><input type="text" id="marca"></div>
     <div><label for="modello">Tipo / modello</label><input type="text" id="modello"></div>
@@ -76,6 +77,7 @@
 </section>
 
 </main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script>
 const OWNER = "ingegnererecca-web", REPO = "type-approval", WF = "cerca-certificato.yml";
 const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
@@ -117,8 +119,70 @@ async function gh(path, opt = {}) {
 let fotoScelta = null;
 ["fotoGalleria", "fotoCamera"].forEach(id => $(id).addEventListener("change", () => {
   const f = $(id).files[0];
-  if (f) { fotoScelta = f; $("anteprima").src = URL.createObjectURL(f); $("anteprima").style.display = "block"; }
+  if (f) { fotoScelta = f; $("anteprima").src = URL.createObjectURL(f); $("anteprima").style.display = "block"; leggiTarga(f); }
 }));
+
+// ---- lettura della targa nel telefono (OCR tesseract.js) e compilazione dei campi ----
+const MARCHI = ["Landis+Gyr", "Itron", "Sagemcom", "Kaifa", "Iskraemeco", "Elster", "Honeywell", "Kamstrup",
+  "Diehl", "Sensus", "Zenner", "Maddalena", "Pietro Fiorentini", "Gewiss", "ABB", "Schneider", "Siemens",
+  "Finder", "Bticino", "Hager", "Carlo Gavazzi", "Algodue", "Socomec", "Eastron", "Mettler", "Bizerba",
+  "Dibal", "Apator", "ZPA", "Janz", "Ziv", "Circutor", "Lovato", "Frer", "Enel", "Aclara", "Holley",
+  "Hexing", "Inhemeter", "Wasion", "Kromschroder", "Elgas", "Metrix"];
+
+function analizzaTarga(testo) {
+  const alto = testo.toUpperCase().replace(/[ \t]+/g, " ");
+  const d = {};
+  for (const m of MARCHI) {
+    const k = m.split("+")[0].toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp("\\b" + k + "\\b").test(alto)) { d.marca = m; break; }
+  }
+  let m = alto.match(/\b(?:TIPO|TYPE|TYP|MODELLO|MODEL|MOD)\.?\s*:?\s*([A-Z0-9][A-Z0-9.\/-]{2,})/);
+  if (m) d.modello = m[1].replace(/[.-]+$/, "");
+  m = testo.match(/\bM\s*[\]\[|]?\s*(\d{2})\s*[\]\[|]?\s*(\d{4})\b/);
+  if (m) d.organismo = m[2];
+  const rif = alto.match(/\b\d{1,4}\s*\/\s*MID\b|\bT\d{4,6}\b|\b[A-Z]{2}[- ]?\d{2}[- ]MI\d{3}[- ][A-Z0-9-]+/g);
+  if (rif) d.riferimento = [...new Set(rif.map(x => x.replace(/\s+/g, "")))].join(", ");
+  if (/KWH/.test(alto) || (/CONTATORE/.test(alto) && /MONOFASE|TRIFASE/.test(alto))) d.categoria = "MI-003";
+  else if (/\bM3\b/.test(alto) && /GAS|\bG4\b|\bG6\b/.test(alto)) d.categoria = "MI-002";
+  else if (/\bM3\b/.test(alto) && /ACQUA|WATER|Q3/.test(alto)) d.categoria = "MI-001";
+  return d;
+}
+
+async function preparaImmagine(file) {
+  const img = await createImageBitmap(file);
+  const lato = Math.max(img.width, img.height), f = 2500 / lato;
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.width * f); c.height = Math.round(img.height * f);
+  const g = c.getContext("2d"); g.filter = "grayscale(1) contrast(1.2)"; g.drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+
+let lettore = null;
+async function leggiTarga(file) {
+  const box = $("lettura");
+  if (!window.Tesseract) { box.innerHTML = "<span class='err'>Lettura automatica non disponibile: compila i campi a mano.</span>"; return; }
+  $("avvia").disabled = true;
+  box.textContent = "Lettura della targa in corso… (la prima volta può richiedere fino a un minuto)";
+  try {
+    const tela = await preparaImmagine(file);
+    if (!lettore) lettore = await Tesseract.createWorker("eng");
+    let testo = "";
+    for (const psm of ["11", "6"]) {
+      await lettore.setParameters({ tessedit_pageseg_mode: psm });
+      testo += "\n" + (await lettore.recognize(tela)).data.text;
+    }
+    const d = analizzaTarga(testo);
+    const campi = ["marca", "modello", "riferimento", "organismo", "categoria"];
+    campi.forEach(k => { $(k).value = d[k] || ""; });
+    const mancanti = campi.filter(k => !d[k]);
+    box.innerHTML = mancanti.length
+      ? `<span class="ok">Targa letta.</span> Non letti: <b>${mancanti.join(", ")}</b> – completali a mano se li conosci.`
+      : `<span class="ok">Targa letta: controlla i dati qui sotto.</span>`;
+  } catch (e) {
+    box.innerHTML = `<span class="err">Lettura non riuscita (${e.message}): compila i campi a mano.</span>`;
+  }
+  $("avvia").disabled = false;
+}
 
 function leggiFile(f) {
   return new Promise((ok, ko) => {
