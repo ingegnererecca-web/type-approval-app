@@ -39,6 +39,8 @@
   <label for="token">Token GitHub (resta salvato solo in questo browser)</label>
   <input type="password" id="token" placeholder="github_pat_... oppure ghp_...">
   <small>Repository: <b>ingegnererecca-web/type-approval</b>. Il token serve per caricare la foto e avviare la ricerca.</small>
+  <label for="email">La tua email (ci arrivano il verbale e i PDF originali in allegato)</label>
+  <input type="text" id="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it">
 </section>
 
 <section>
@@ -69,7 +71,7 @@
 </section>
 
 <section>
-  <h2>4. Risultati</h2>
+  <h2>4. Risultati non inviati per email</h2>
   <div id="risultati"><small>Premi "Aggiorna risultati".</small></div>
 </section>
 
@@ -80,7 +82,8 @@ const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const $ = id => document.getElementById(id);
 
 // token: solo in memoria del browser (localStorage, se disponibile)
-try { $("token").value = localStorage.getItem("ta_token") || ""; } catch (e) {}
+try { $("token").value = localStorage.getItem("ta_token") || ""; $("email").value = localStorage.getItem("ta_email") || ""; } catch (e) {}
+$("email").addEventListener("change", () => { try { localStorage.setItem("ta_email", $("email").value.trim()); } catch (e) {} });
 $("token").addEventListener("change", () => { try { localStorage.setItem("ta_token", $("token").value.trim()); } catch (e) {} });
 
 function stato(msg, cls) { $("stato").innerHTML = `<span class="${cls||''}">${msg}</span>`; }
@@ -133,24 +136,22 @@ $("avvia").addEventListener("click", async () => {
     const corr = { marca: $("marca").value.trim(), modello: $("modello").value.trim(),
       riferimento: $("riferimento").value.trim(), organismo: $("organismo").value.trim(),
       categoria: $("categoria").value.trim() };
-    const ciSonoCorrezioni = Object.values(corr).some(v => v);
+    const email = $("email").value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) throw new Error("Inserisci la tua email nella sezione 1.");
     let percorso = "";
     if (f) {
       stato("Caricamento della foto…");
       const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
       percorso = `foto/${ts}_${f.name.replace(/[^A-Za-z0-9._-]/g, "_")}`;
-      // con correzioni: la foto si carica senza avviare il workflow ([skip ci]) e poi si avvia a mano
-      const msg = ciSonoCorrezioni ? `Foto targa ${percorso} [skip ci]` : `Foto targa ${percorso}`;
+      // [skip ci]: la ricerca parte sotto, con l'email e le eventuali correzioni
       await gh(`/contents/${percorso}`, { method: "PUT",
-        body: JSON.stringify({ message: msg, content: await leggiFile(f) }) });
+        body: JSON.stringify({ message: `Foto targa ${percorso} [skip ci]`, content: await leggiFile(f) }) });
+    } else if (!corr.marca && !corr.modello && !corr.riferimento) {
+      throw new Error("Carica una foto oppure inserisci almeno marca, modello o riferimento.");
     }
-    if (!f || ciSonoCorrezioni) {
-      if (!f && !corr.marca && !corr.modello && !corr.riferimento)
-        throw new Error("Carica una foto oppure inserisci almeno marca, modello o riferimento.");
-      await gh(`/actions/workflows/${WF}/dispatches`, { method: "POST",
-        body: JSON.stringify({ ref: "main", inputs: { foto: percorso, ...corr } }) });
-    }
-    stato("Ricerca avviata. Di solito servono da 2 a 10 minuti (di più se ci sono PDF da leggere con OCR).", "ok");
+    await gh(`/actions/workflows/${WF}/dispatches`, { method: "POST",
+      body: JSON.stringify({ ref: "main", inputs: { foto: percorso, email, ...corr } }) });
+    stato("Ricerca avviata. Tra 3-10 minuti ricevi l'email con il verbale e i PDF originali in allegato.", "ok");
     controllaEsecuzione();
   } catch (e) { stato(e.message, "err"); }
   $("avvia").disabled = false;
@@ -168,7 +169,7 @@ async function controllaEsecuzione() {
       stato(`Ricerca in corso (avviata ${quando}) – stato: ${run.status}…`);
       timer = setTimeout(controllaEsecuzione, 10000);
     } else {
-      stato(`Ultima ricerca (${quando}): ${run.conclusion === "success" ? "completata" : "terminata con errore – " + run.html_url}`,
+      stato(`Ultima ricerca (${quando}): ${run.conclusion === "success" ? "completata – controlla la tua email" : "terminata con errore – " + run.html_url}`,
             run.conclusion === "success" ? "ok" : "err");
       caricaRisultati();
     }
@@ -204,7 +205,7 @@ async function caricaRisultati() {
   try {
     const r = await (await gh(`/actions/artifacts?per_page=20`)).json();
     const lista = (r.artifacts || []).filter(a => !a.expired && a.name.startsWith("verbale-"));
-    if (!lista.length) { box.innerHTML = "<small>Nessun risultato disponibile (scadono dopo 1 giorno).</small>"; return; }
+    if (!lista.length) { box.innerHTML = "<small>Nessuno: i risultati sono stati inviati per email.</small>"; return; }
     box.innerHTML = "";
     for (const a of lista) {
       const run = a.workflow_run ? a.workflow_run.id : a.name.replace("verbale-", "");
