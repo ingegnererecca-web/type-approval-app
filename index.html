@@ -138,6 +138,8 @@ $("avvia").addEventListener("click", async () => {
       categoria: $("categoria").value.trim() };
     const email = $("email").value.trim();
     if (email && !/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) throw new Error("L'email inserita non è valida.");
+    await cancellaTutteLeConsegne();  // il passato non serve: si parte puliti
+    $("risultati").innerHTML = "<small>In attesa della nuova ricerca…</small>";
     let percorso = "";
     if (f) {
       stato("Caricamento della foto…");
@@ -208,14 +210,30 @@ async function scaricaBlob(sha, nome) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+async function elencoConsegne() {
+  return (await (await gh(`/git/matching-refs/heads/consegna/`)).json())
+    .sort((a, b) => b.ref.localeCompare(a.ref, undefined, { numeric: true }));
+}
+async function cancellaTutteLeConsegne() {
+  for (const r of await elencoConsegne())
+    await gh(`/git/refs/${r.ref.replace("refs/", "")}`, { method: "DELETE" }).catch(() => {});
+}
+function azzeraModulo() {
+  fotoScelta = null;
+  ["fotoGalleria", "fotoCamera", "marca", "modello", "riferimento", "organismo", "categoria"].forEach(id => { $(id).value = ""; });
+  $("anteprima").style.display = "none"; $("anteprima").removeAttribute("src");
+  stato("Pronto per una nuova foto.", "ok");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 async function caricaRisultati() {
   // risultati sui rami privati temporanei consegna/<id> (cancellati dopo il download o entro 24 ore)
   const box = $("risultati");
   try {
-    const rami = await (await gh(`/git/matching-refs/heads/consegna/`)).json();
+    const rami = (await elencoConsegne()).slice(0, 1);  // solo l'ultima ricerca
     if (!rami.length) { box.innerHTML = "<small>Nessun risultato da scaricare.</small>"; return; }
     box.innerHTML = "";
-    for (const ramo of rami.reverse()) {
+    for (const ramo of rami) {
       const nomeRamo = ramo.ref.replace("refs/heads/", "");
       const commit = await (await gh(`/git/commits/${ramo.object.sha}`)).json();
       const albero = await (await gh(`/git/trees/${commit.tree.sha}?recursive=1`)).json();
@@ -223,7 +241,10 @@ async function caricaRisultati() {
         .sort((x, y) => (y.path.endsWith("verbale.pdf") - x.path.endsWith("verbale.pdf")) || x.path.localeCompare(y.path));
       const quando = new Date(commit.committer.date).toLocaleString("it-IT");
       const d = document.createElement("div"); d.className = "risultato";
-      d.innerHTML = `<b>Ricerca del ${quando}</b><br>` + file.map((f, i) => {
+      const nCert = file.filter(x => x.path.includes("/certificati/")).length;
+      const cartella = (file[0] ? file[0].path.split("/")[0] : "").replace(/^\d{8}-\d{6}_/, "");
+      d.innerHTML = `<b>Ricerca del ${quando}</b> – ${cartella === "strumento" ? "modello non letto" : cartella}<br>
+        <span class="${nCert ? "ok" : "err"}">${nCert ? `Certificati trovati: ${nCert}` : "Nessun certificato trovato: vedi verbale e richiesta"}</span><br>` + file.map((f, i) => {
         const nome = f.path.split("/").pop();
         const etichetta = nome === "verbale.pdf" ? "Verbale di ricerca (PDF)" :
           nome === "richiesta.pdf" ? "Richiesta motivata (PDF)" :
@@ -238,7 +259,8 @@ async function caricaRisultati() {
       const canc = d.querySelector("button[data-canc]");
       canc.onclick = async () => {
         if (canc.dataset.conferma !== "1") { canc.dataset.conferma = "1"; canc.textContent = "Tocca di nuovo per confermare la cancellazione"; return; }
-        try { await gh(`/git/refs/heads/${nomeRamo}`, { method: "DELETE" }); d.remove(); }
+        try { await gh(`/git/refs/heads/${nomeRamo}`, { method: "DELETE" }); d.remove();
+              $("risultati").innerHTML = "<small>Nessun risultato da scaricare.</small>"; azzeraModulo(); }
         catch (e) { canc.textContent = e.message; }
       };
       box.appendChild(d);
