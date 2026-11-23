@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Type Approval - ricerca certificato</title>
+<style>
+  :root { --blu:#0b4f8a; --grigio:#f3f5f8; --bordo:#d5dbe3; }
+  * { box-sizing:border-box; }
+  body { font-family:system-ui,-apple-system,"Segoe UI",sans-serif; margin:0; background:var(--grigio); color:#1d2733; }
+  header { background:var(--blu); color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:1.25rem; }
+  main { max-width:980px; margin:0 auto; padding:16px; }
+  section { background:#fff; border:1px solid var(--bordo); border-radius:10px; padding:16px; margin-bottom:16px; }
+  h2 { font-size:1.05rem; margin:0 0 10px; color:var(--blu); }
+  label { display:block; font-size:.85rem; margin:8px 0 3px; color:#4a5868; }
+  input[type=text], input[type=password] { width:100%; padding:8px; border:1px solid var(--bordo); border-radius:6px; font-size:.95rem; }
+  .griglia { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:0 14px; }
+  button { background:var(--blu); color:#fff; border:0; border-radius:6px; padding:9px 16px; font-size:.95rem; margin-top:12px; cursor:pointer; }
+  button.sec { background:#fff; color:var(--blu); border:1px solid var(--blu); }
+  button:disabled { opacity:.5; cursor:default; }
+  #stato { font-size:.9rem; white-space:pre-wrap; }
+  .ok { color:#1a7f37; } .err { color:#b42318; }
+  table { border-collapse:collapse; width:100%; font-size:.82rem; margin:8px 0; }
+  th, td { border:1px solid var(--bordo); padding:4px 6px; text-align:left; vertical-align:top; word-break:break-word; }
+  th { background:var(--grigio); }
+  .risultato { border-top:1px solid var(--bordo); padding:10px 0; }
+  .risultato summary { cursor:pointer; font-weight:600; }
+  img#anteprima { max-width:220px; max-height:220px; display:none; margin-top:8px; border-radius:6px; }
+  small { color:#5b6b7c; }
+</style>
+</head>
+<body>
+<header><h1>Type Approval &mdash; ricerca del certificato di esame UE del tipo</h1></header>
+<main>
+
+<section>
+  <h2>1. Accesso a GitHub</h2>
+  <label for="token">Token GitHub (resta salvato solo in questo browser)</label>
+  <input type="password" id="token" placeholder="github_pat_... oppure ghp_...">
+  <small>Repository: <b>ingegnererecca-web/type-approval</b>. Il token serve per caricare la foto e avviare la ricerca.</small>
+</section>
+
+<section>
+  <h2>2. Foto della targa</h2>
+  <input type="file" id="foto" accept="image/*" capture="environment">
+  <img id="anteprima" alt="anteprima">
+  <label>Correzioni facoltative (lascia vuoto per usare solo la lettura automatica)</label>
+  <div class="griglia">
+    <div><label for="marca">Fabbricante / marca</label><input type="text" id="marca"></div>
+    <div><label for="modello">Tipo / modello</label><input type="text" id="modello"></div>
+    <div><label for="riferimento">Riferimento certificato in targa</label><input type="text" id="riferimento" placeholder="es. T10244 o 027/MID"></div>
+    <div><label for="organismo">Organismo dopo la M</label><input type="text" id="organismo" placeholder="es. 1259"></div>
+    <div><label for="categoria">Categoria MID</label><input type="text" id="categoria" placeholder="es. MI-003"></div>
+  </div>
+  <button id="avvia">Avvia ricerca</button>
+  <small style="display:block;margin-top:6px">Senza foto la ricerca parte con i soli dati inseriti. La foto viene cancellata da GitHub, anche dalla cronologia, al termine della ricerca: resta solo dentro il verbale PDF.</small>
+</section>
+
+<section>
+  <h2>3. Stato</h2>
+  <div id="stato">Nessuna ricerca avviata.</div>
+  <button class="sec" id="aggiorna">Aggiorna risultati</button>
+</section>
+
+<section>
+  <h2>4. Risultati</h2>
+  <div id="risultati"><small>Premi "Aggiorna risultati".</small></div>
+</section>
+
+</main>
+<script>
+const OWNER = "ingegnererecca-web", REPO = "type-approval", WF = "cerca-certificato.yml";
+const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
+const $ = id => document.getElementById(id);
+
+// token: solo in memoria del browser (localStorage, se disponibile)
+try { $("token").value = localStorage.getItem("ta_token") || ""; } catch (e) {}
+$("token").addEventListener("change", () => { try { localStorage.setItem("ta_token", $("token").value.trim()); } catch (e) {} });
+
+function stato(msg, cls) { $("stato").innerHTML = `<span class="${cls||''}">${msg}</span>`; }
+
+async function gh(path, opt = {}) {
+  const tok = $("token").value.trim();
+  if (!tok) throw new Error("Inserisci il token GitHub.");
+  const r = await fetch(path.startsWith("http") ? path : API + path, {
+    ...opt,
+    headers: { "Authorization": `Bearer ${tok}`, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", ...(opt.headers || {}) }
+  });
+  if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  return r;
+}
+
+$("foto").addEventListener("change", () => {
+  const f = $("foto").files[0];
+  if (f) { $("anteprima").src = URL.createObjectURL(f); $("anteprima").style.display = "block"; }
+});
+
+function leggiFile(f) {
+  return new Promise((ok, ko) => {
+    const fr = new FileReader();
+    fr.onload = () => ok(fr.result.split(",")[1]);
+    fr.onerror = ko;
+    fr.readAsDataURL(f);
+  });
+}
+
+$("avvia").addEventListener("click", async () => {
+  $("avvia").disabled = true;
+  try {
+    const f = $("foto").files[0];
+    const corr = { marca: $("marca").value.trim(), modello: $("modello").value.trim(),
+      riferimento: $("riferimento").value.trim(), organismo: $("organismo").value.trim(),
+      categoria: $("categoria").value.trim() };
+    const ciSonoCorrezioni = Object.values(corr).some(v => v);
+    let percorso = "";
+    if (f) {
+      stato("Caricamento della foto…");
+      const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      percorso = `foto/${ts}_${f.name.replace(/[^A-Za-z0-9._-]/g, "_")}`;
+      // con correzioni: la foto si carica senza avviare il workflow ([skip ci]) e poi si avvia a mano
+      const msg = ciSonoCorrezioni ? `Foto targa ${percorso} [skip ci]` : `Foto targa ${percorso}`;
+      await gh(`/contents/${percorso}`, { method: "PUT",
+        body: JSON.stringify({ message: msg, content: await leggiFile(f) }) });
+    }
+    if (!f || ciSonoCorrezioni) {
+      if (!f && !corr.marca && !corr.modello && !corr.riferimento)
+        throw new Error("Carica una foto oppure inserisci almeno marca, modello o riferimento.");
+      await gh(`/actions/workflows/${WF}/dispatches`, { method: "POST",
+        body: JSON.stringify({ ref: "main", inputs: { foto: percorso, ...corr } }) });
+    }
+    stato("Ricerca avviata. Di solito servono da 2 a 10 minuti (di più se ci sono PDF da leggere con OCR).", "ok");
+    controllaEsecuzione();
+  } catch (e) { stato(e.message, "err"); }
+  $("avvia").disabled = false;
+});
+
+let timer = null;
+async function controllaEsecuzione() {
+  clearTimeout(timer);
+  try {
+    const r = await (await gh(`/actions/workflows/${WF}/runs?per_page=1`)).json();
+    const run = r.workflow_runs && r.workflow_runs[0];
+    if (!run) { timer = setTimeout(controllaEsecuzione, 8000); return; }
+    const quando = new Date(run.created_at).toLocaleString("it-IT");
+    if (run.status !== "completed") {
+      stato(`Ricerca in corso (avviata ${quando}) – stato: ${run.status}…`);
+      timer = setTimeout(controllaEsecuzione, 10000);
+    } else {
+      stato(`Ultima ricerca (${quando}): ${run.conclusion === "success" ? "completata" : "terminata con errore – " + run.html_url}`,
+            run.conclusion === "success" ? "ok" : "err");
+      caricaRisultati();
+    }
+  } catch (e) { stato(e.message, "err"); }
+}
+$("aggiorna").addEventListener("click", () => { controllaEsecuzione(); caricaRisultati(); });
+
+function md(t) {  // markdown minimo: titoli, tabelle, elenchi, grassetto, codice, link
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const inl = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const righe = t.split("\n"); let out = "", i = 0;
+  while (i < righe.length) {
+    const l = righe[i];
+    if (l.startsWith("|")) {
+      const tab = []; while (i < righe.length && righe[i].startsWith("|")) tab.push(righe[i++]);
+      const celle = r => r.slice(1, -1).split("|").map(c => c.trim());
+      out += "<table><tr>" + celle(tab[0]).map(c => `<th>${inl(c)}</th>`).join("") + "</tr>";
+      tab.slice(2).forEach(r => out += "<tr>" + celle(r).map(c => `<td>${inl(c)}</td>`).join("") + "</tr>");
+      out += "</table>"; continue;
+    }
+    if (/^#+ /.test(l)) out += `<h3>${inl(l.replace(/^#+ /, ""))}</h3>`;
+    else if (l.startsWith("- ")) out += `<div>• ${inl(l.slice(2))}</div>`;
+    else if (l.trim()) out += `<p>${inl(l)}</p>`;
+    i++;
+  }
+  return out;
+}
+
+async function caricaRisultati() {
+  // i risultati non stanno nel repository: sono file temporanei ("Artifacts") delle esecuzioni
+  const box = $("risultati");
+  try {
+    const r = await (await gh(`/actions/artifacts?per_page=20`)).json();
+    const lista = (r.artifacts || []).filter(a => !a.expired && a.name.startsWith("verbale-"));
+    if (!lista.length) { box.innerHTML = "<small>Nessun risultato disponibile (scadono dopo 1 giorno).</small>"; return; }
+    box.innerHTML = "";
+    for (const a of lista) {
+      const run = a.workflow_run ? a.workflow_run.id : a.name.replace("verbale-", "");
+      const quando = new Date(a.created_at).toLocaleString("it-IT");
+      const scade = new Date(a.expires_at).toLocaleString("it-IT");
+      const d = document.createElement("div"); d.className = "risultato";
+      d.innerHTML = `<b>Ricerca del ${quando}</b> <small>(scade il ${scade})</small><br>
+        <a href="https://github.com/${OWNER}/${REPO}/actions/runs/${run}" target="_blank" rel="noopener">
+        Apri la pagina dell'esecuzione e scarica "${a.name}" (verbale PDF + certificati)</a><br>
+        <button class="sec">Ho scaricato: cancella ora</button>`;
+      d.querySelector("button").onclick = async () => {
+        if (!confirm("Cancellare definitivamente questo risultato da GitHub?")) return;
+        try { await gh(`/actions/artifacts/${a.id}`, { method: "DELETE" }); d.remove(); }
+        catch (e) { alert(e.message); }
+      };
+      box.appendChild(d);
+    }
+  } catch (e) { box.innerHTML = `<span class="err">${e.message}</span>`; }
+}
+</script>
+</body>
+</html>
