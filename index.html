@@ -43,7 +43,12 @@
 
 <section>
   <h2>2. Foto della targa</h2>
-  <input type="file" id="foto" accept="image/*">
+  <div class="griglia">
+    <div><label for="fotoGalleria">Scegli una foto già salvata</label>
+      <input type="file" id="fotoGalleria" accept=".jpg,.jpeg,.png,.heic,.heif,.webp,image/jpeg,image/png"></div>
+    <div><label for="fotoCamera">Oppure scatta ora</label>
+      <input type="file" id="fotoCamera" accept="image/*" capture="environment"></div>
+  </div>
   <img id="anteprima" alt="anteprima">
   <label>Correzioni facoltative (lascia vuoto per usare solo la lettura automatica)</label>
   <div class="griglia">
@@ -92,10 +97,11 @@ async function gh(path, opt = {}) {
   return r;
 }
 
-$("foto").addEventListener("change", () => {
-  const f = $("foto").files[0];
-  if (f) { $("anteprima").src = URL.createObjectURL(f); $("anteprima").style.display = "block"; }
-});
+let fotoScelta = null;
+["fotoGalleria", "fotoCamera"].forEach(id => $(id).addEventListener("change", () => {
+  const f = $(id).files[0];
+  if (f) { fotoScelta = f; $("anteprima").src = URL.createObjectURL(f); $("anteprima").style.display = "block"; }
+}));
 
 function leggiFile(f) {
   return new Promise((ok, ko) => {
@@ -109,7 +115,7 @@ function leggiFile(f) {
 $("avvia").addEventListener("click", async () => {
   $("avvia").disabled = true;
   try {
-    const f = $("foto").files[0];
+    const f = fotoScelta;
     const corr = { marca: $("marca").value.trim(), modello: $("modello").value.trim(),
       riferimento: $("riferimento").value.trim(), organismo: $("organismo").value.trim(),
       categoria: $("categoria").value.trim() };
